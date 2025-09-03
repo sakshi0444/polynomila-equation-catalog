@@ -1,0 +1,1 @@
+# polynomila-equation-catalog

@@ -6,17 +6,65 @@
 #include <string>
 #include <cmath>
 #include <stdexcept>
+#include <algorithm>
 #include "rapidjson/document.h"
 #include "rapidjson/filereadstream.h"
 
 using namespace std;
 using namespace rapidjson;
 
-// FIX 1: Custom decoder to handle numbers larger than a long long.
-// It converts the number string directly to a double to preserve magnitude.
-double decodeBaseValue(const string& encodedValue, int base) {
-    double result = 0.0;
-    double powerOfBase = 1.0;
+// Use long long for better precision with large integers
+typedef long long ll;
+
+// Structure to represent a rational number for exact arithmetic
+struct Fraction {
+    ll num, den;
+    
+    Fraction(ll n = 0, ll d = 1) : num(n), den(d) {
+        if (den < 0) {
+            num = -num;
+            den = -den;
+        }
+        simplify();
+    }
+    
+    ll gcd(ll a, ll b) {
+        if (b == 0) return a;
+        return gcd(b, a % b);
+    }
+    
+    void simplify() {
+        if (den == 0) return;
+        ll g = gcd(abs(num), abs(den));
+        num /= g;
+        den /= g;
+    }
+    
+    Fraction operator+(const Fraction& other) const {
+        return Fraction(num * other.den + other.num * den, den * other.den);
+    }
+    
+    Fraction operator-(const Fraction& other) const {
+        return Fraction(num * other.den - other.num * den, den * other.den);
+    }
+    
+    Fraction operator*(const Fraction& other) const {
+        return Fraction(num * other.num, den * other.den);
+    }
+    
+    Fraction operator/(const Fraction& other) const {
+        return Fraction(num * other.den, den * other.num);
+    }
+    
+    double toDouble() const {
+        return (double)num / den;
+    }
+};
+
+// Convert from any base to decimal using string arithmetic for large numbers
+ll decodeBaseValue(const string& encodedValue, int base) {
+    ll result = 0;
+    ll powerOfBase = 1;
 
     for (int i = encodedValue.length() - 1; i >= 0; --i) {
         int digitValue = 0;
@@ -24,10 +72,14 @@ double decodeBaseValue(const string& encodedValue, int base) {
 
         if (digitChar >= '0' && digitChar <= '9') {
             digitValue = digitChar - '0';
-        } else if (digitChar >= 'a' && digitChar <= 'f') {
+        } else if (digitChar >= 'a' && digitChar <= 'z') {
             digitValue = 10 + (digitChar - 'a');
-        } else if (digitChar >= 'A' && digitChar <= 'F') {
+        } else if (digitChar >= 'A' && digitChar <= 'Z') {
             digitValue = 10 + (digitChar - 'A');
+        }
+        
+        if (digitValue >= base) {
+            throw invalid_argument("Invalid digit for given base");
         }
         
         result += digitValue * powerOfBase;
@@ -36,40 +88,35 @@ double decodeBaseValue(const string& encodedValue, int base) {
     return result;
 }
 
-// FIX 2: Improved Gaussian elimination with pivoting for better numerical stability.
-vector<double> performGaussianElimination(vector<vector<double>> coefficientMatrix, vector<double> constantsVector) {
-    int n = coefficientMatrix.size();
-    for (int pivot = 0; pivot < n; ++pivot) {
-        // Find the row with the largest pivot element
-        int max_row = pivot;
-        for (int i = pivot + 1; i < n; i++) {
-            if (abs(coefficientMatrix[i][pivot]) > abs(coefficientMatrix[max_row][pivot])) {
-                max_row = i;
+// Lagrange interpolation to find f(0) - the secret
+ll lagrangeInterpolation(const vector<pair<int, ll>>& points) {
+    Fraction result(0, 1);
+    int k = points.size();
+    
+    for (int i = 0; i < k; i++) {
+        // Calculate Lagrange basis polynomial L_i(0)
+        Fraction basisValue(1, 1);
+        
+        for (int j = 0; j < k; j++) {
+            if (i != j) {
+                // L_i(0) = Product of (0 - x_j) / (x_i - x_j) for all j != i
+                Fraction numerator(-points[j].first, 1);  // (0 - x_j)
+                Fraction denominator(points[i].first - points[j].first, 1);  // (x_i - x_j)
+                basisValue = basisValue * (numerator / denominator);
             }
         }
-        // Swap rows to make the largest element the pivot
-        swap(coefficientMatrix[pivot], coefficientMatrix[max_row]);
-        swap(constantsVector[pivot], constantsVector[max_row]);
-
-        // Normalize the pivot row
-        double pivotElement = coefficientMatrix[pivot][pivot];
-        for (int col = pivot; col < n; col++) {
-            coefficientMatrix[pivot][col] /= pivotElement;
-        }
-        constantsVector[pivot] /= pivotElement;
-
-        // Eliminate the current column in other rows
-        for (int row = 0; row < n; row++) {
-            if (row != pivot) {
-                double factor = coefficientMatrix[row][pivot];
-                for (int col = pivot; col < n; col++) {
-                    coefficientMatrix[row][col] -= factor * coefficientMatrix[pivot][col];
-                }
-                constantsVector[row] -= factor * constantsVector[pivot];
-            }
-        }
+        
+        // Add y_i * L_i(0) to result
+        Fraction term(points[i].second, 1);
+        result = result + (term * basisValue);
     }
-    return constantsVector;
+    
+    // Result should be an integer for Shamir's Secret Sharing
+    if (result.den != 1) {
+        cerr << "Warning: Result is not an integer: " << result.num << "/" << result.den << endl;
+    }
+    
+    return result.num;
 }
 
 void processTestCase(const char* filename) {
@@ -91,39 +138,54 @@ void processTestCase(const char* filename) {
     }
 
     const Value& keyData = jsonDocument["keys"];
-    int polynomialDegree = keyData["k"].GetInt();
+    int k = keyData["k"].GetInt();  // threshold - minimum shares needed
+    int n = keyData["n"].GetInt();  // total shares available
 
-    // The matrix is correctly sized to k x k
-    vector<vector<double>> coefficientMatrix(polynomialDegree, vector<double>(polynomialDegree, 0));
-    vector<double> constantsVector(polynomialDegree, 0);
+    vector<pair<int, ll>> shares;  // (x, y) pairs
 
-    // The loop correctly iterates k times to build a square system
-    for (int i = 1; i <= polynomialDegree; ++i) {
-        string index = to_string(i);
-        const Value& rootData = jsonDocument[index.c_str()];
-        
-        // FIX 3: Safely read the 'base', whether it's a string or an integer.
-        int base = 0;
-        if (rootData["base"].IsInt()) {
-            base = rootData["base"].GetInt();
-        } else if (rootData["base"].IsString()) {
-            base = stoi(rootData["base"].GetString());
-        }
+    // Collect all available shares
+    for (auto& member : jsonDocument.GetObject()) {
+        if (strcmp(member.name.GetString(), "keys") != 0) {
+            int x = stoi(member.name.GetString());
+            
+            const Value& shareData = member.value;
+            
+            // Read base (handle both string and integer format)
+            int base = 0;
+            if (shareData["base"].IsInt()) {
+                base = shareData["base"].GetInt();
+            } else if (shareData["base"].IsString()) {
+                base = stoi(shareData["base"].GetString());
+            }
 
-        string encodedValue = rootData["value"].GetString();
-        
-        // Use the new custom decoder and store the result in a double
-        double decodedY = decodeBaseValue(encodedValue, base);
-        
-        constantsVector[i - 1] = decodedY;
-        for (int j = 0; j < polynomialDegree; ++j) {
-            coefficientMatrix[i - 1][j] = pow((double)i, polynomialDegree - j - 1);
+            string encodedValue = shareData["value"].GetString();
+            
+            try {
+                ll decodedY = decodeBaseValue(encodedValue, base);
+                shares.push_back({x, decodedY});
+            } catch (const exception& e) {
+                cerr << "Error decoding share " << x << ": " << e.what() << endl;
+                continue;
+            }
         }
     }
 
-    vector<double> solutionVector = performGaussianElimination(coefficientMatrix, constantsVector);
+    if (shares.size() < k) {
+        cerr << "Error: Not enough shares to reconstruct secret. Need " << k 
+             << ", got " << shares.size() << endl;
+        return;
+    }
 
-    cout << "The secret (constant term c) for " << filename << " is: " << round(solutionVector.back()) << endl;
+    // Sort shares by x value for consistency
+    sort(shares.begin(), shares.end());
+
+    // Use first k shares for reconstruction
+    vector<pair<int, ll>> selectedShares(shares.begin(), shares.begin() + k);
+
+    // Apply Lagrange interpolation to find f(0) - the secret
+    ll secret = lagrangeInterpolation(selectedShares);
+
+    cout << "The secret (constant term c) for " << filename << " is: " << secret << endl;
 }
 
 int main() {

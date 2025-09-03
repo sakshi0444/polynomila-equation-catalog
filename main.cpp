@@ -1,5 +1,4 @@
-// Name: Ganta Venkata Kousik
-// Roll No: 21pa1a0549
+
 
 #include <iostream>
 #include <vector>
@@ -130,4 +129,5 @@ int main() {
     processTestCase("input1.json");
     processTestCase("input2.json");
     return 0;
+
 }
